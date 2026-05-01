@@ -100,6 +100,20 @@ bool APIProxy::add_on_pre_gui_draw_element(REFOnPreGuiDrawElementCb cb) {
     return true;
 }
 
+bool APIProxy::remove_on_imgui_frame(REFOnImGuiFrameCb cb) {
+    std::unique_lock _{m_api_cb_mtx};
+
+    m_on_imgui_frame_cbs.clear();
+    return true;
+}
+
+bool APIProxy::remove_on_message(REFOnMessageCb cb) {
+    std::unique_lock _{m_api_cb_mtx};
+
+    m_on_message_cbs.clear();
+    return true;
+}
+
 void APIProxy::on_lua_state_created(sol::state& state) {
     std::shared_lock _{m_api_cb_mtx};
 

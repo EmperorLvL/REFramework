@@ -48,6 +48,9 @@ public:
     bool add_on_imgui_draw_ui(REFOnImGuiDrawUICb cb);
     bool add_on_pre_gui_draw_element(REFOnPreGuiDrawElementCb cb);
 
+    bool remove_on_imgui_frame(REFOnImGuiFrameCb cb);
+    bool remove_on_message(REFOnMessageCb cb);
+
 private:
     // API Callbacks
     std::shared_mutex m_api_cb_mtx;

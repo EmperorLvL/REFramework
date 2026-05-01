@@ -37,6 +37,7 @@ public:
 
     std::string_view get_name() const override { return "PluginLoader"; }
     std::optional<std::string> initialize_plugins();
+    void reload_plugins();
     void on_frame() override;
     void on_draw_ui() override;
     

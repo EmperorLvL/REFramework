@@ -815,6 +815,119 @@ std::optional<std::string> PluginLoader::initialize_plugins() {
     return Mod::on_initialize();
 }
 
+void PluginLoader::reload_plugins() {
+    namespace fs = std::filesystem;
+
+    const auto plugin_path = REFramework::get_persistent_dir() / "reframework" / "plugins";
+
+    for (auto&& entry : fs::directory_iterator{plugin_path}) {
+        auto&& path = entry.path();
+
+        if (path.has_extension() && path.extension() == ".dll") {
+            auto module = LoadLibraryW(path.operator std::wstring().c_str());
+
+            if (module == nullptr) {
+                spdlog::error("[PluginLoader] Failed to load {}", path.string());
+                m_plugin_load_errors.emplace(path.stem().string(), "Failed to load");
+                continue;
+            }
+
+            spdlog::info("[PluginLoader] Loaded {}", path.string());
+            m_plugins.emplace(path.stem().string(), module);
+        }
+    }
+
+    for (auto it = m_plugins.begin(); it != m_plugins.end();) {
+        auto name = it->first;
+        auto mod = it->second;
+        auto required_version_fn = (REFPluginRequiredVersionFn)GetProcAddress(mod, "reframework_plugin_required_version");
+
+        if (required_version_fn == nullptr) {
+            spdlog::info("[PluginLoader] {} has no reframework_plugin_required_version function, skipping...", name);
+
+            ++it;
+            continue;
+        }
+
+        REFrameworkPluginVersion required_version{};
+
+        try {
+            required_version_fn(&required_version);
+        } catch (...) {
+            spdlog::error("[PluginLoader] {} has an exception in reframework_plugin_required_version, skipping...", name);
+            m_plugin_load_errors.emplace(name, "Exception occurred in reframework_plugin_required_version");
+            FreeLibrary(mod);
+            it = m_plugins.erase(it);
+            continue;
+        }
+
+        spdlog::info(
+            "[PluginLoader] {} requires version {}.{}.{}", name, required_version.major, required_version.minor, required_version.patch);
+
+        if (required_version.major != g_plugin_version.major) {
+            spdlog::error("[PluginLoader] Plugin {} requires a different major version", name);
+            m_plugin_load_errors.emplace(name, "Requires a different major version");
+            FreeLibrary(mod);
+            it = m_plugins.erase(it);
+            continue;
+        }
+
+        if (required_version.minor > g_plugin_version.minor) {
+            spdlog::error("[PluginLoader] Plugin {} requires a newer minor version", name);
+            m_plugin_load_errors.emplace(name, "Requires a newer minor version");
+            FreeLibrary(mod);
+            it = m_plugins.erase(it);
+            continue;
+        }
+
+        if (required_version.patch > g_plugin_version.patch && required_version.minor == g_plugin_version.minor) {
+            spdlog::warn("[PluginLoader] Plugin {} desires a newer patch version", name);
+            m_plugin_load_warnings.emplace(name, "Desires a newer patch version");
+        }
+
+        if (required_version.game_name != nullptr && std::string_view{required_version.game_name} != g_plugin_version.game_name) {
+            spdlog::error("[PluginLoader] Plugin {} is for a different game {}", name, required_version.game_name);
+            m_plugin_load_errors.emplace(name, "Is for a different game");
+            FreeLibrary(mod);
+            it = m_plugins.erase(it);
+            continue;
+        }
+
+        ++it;
+    }
+
+    // Call reframework_plugin_initialize on any dlls that export it.
+    for (auto it = m_plugins.begin(); it != m_plugins.end();) {
+        auto name = it->first;
+        auto mod = it->second;
+        auto init_fn = (REFPluginInitializeFn)GetProcAddress(mod, "reframework_plugin_initialize");
+
+        if (init_fn == nullptr) {
+            ++it;
+            continue;
+        }
+
+        spdlog::info("[PluginLoader] Initializing {}...", name);
+        try {
+            if (!init_fn(&g_plugin_initialize_param)) {
+                spdlog::error("[PluginLoader] Failed to initialize {}", name);
+                m_plugin_load_errors.emplace(name, "Failed to initialize");
+                FreeLibrary(mod);
+                it = m_plugins.erase(it);
+                continue;
+            }
+        } catch (...) {
+            spdlog::error("[PluginLoader] {} has an exception in reframework_plugin_initialize, skipping...", name);
+            m_plugin_load_errors.emplace(name, "Exception occurred in reframework_plugin_initialize");
+            FreeLibrary(mod);
+            it = m_plugins.erase(it);
+            continue;
+        }
+
+        ++it;
+    }
+}
+
 void PluginLoader::on_draw_ui() {
     ImGui::SetNextItemOpen(false, ImGuiCond_Once);
 
@@ -827,8 +940,20 @@ void PluginLoader::on_draw_ui() {
             for (auto&& [name, _] : m_plugins) {
                 ImGui::Text(name.c_str());
             }
+            if (ImGui::Button("Unload")) {
+                APIProxy::get()->remove_on_imgui_frame(nullptr);
+                APIProxy::get()->remove_on_message(nullptr);
+
+                for (auto it = m_plugins.begin(); it != m_plugins.end();) {
+                    FreeLibrary(it->second);
+                    it = m_plugins.erase(it);
+                }
+            }
         } else {
             ImGui::Text("No plugins loaded.");
+            if (ImGui::Button("Load")) {
+                reload_plugins();
+            }
         }
 
         if (!m_plugin_load_errors.empty()) {
